@@ -1,0 +1,8 @@
+# List of source files containing translatable strings.
+# Please keep this file sorted alphabetically.
+data/com.x1da49.textay.desktop.in
+data/com.x1da49.textay.metainfo.xml.in
+data/com.x1da49.textay.gschema.xml
+src/main.py
+src/window.py
+src/window.ui

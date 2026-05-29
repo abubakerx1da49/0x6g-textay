@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Textay
+Exec=textay
+Icon=com.x1da49.textay
+Terminal=false
+Type=Application
+Categories=Utility;
+Keywords=GTK;
+StartupNotify=true
+DBusActivatable=true

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="textay">
+	<schema id="com.x1da49.textay" path="/com/x1da49/textay/">
+	</schema>
+</schemalist>
