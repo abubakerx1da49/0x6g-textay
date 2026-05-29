@@ -152,7 +152,7 @@ class TextayEditor(Gtk.Box):
         self.preview_scrolled.set_hexpand(True)
         self.preview_scrolled.set_vexpand(True)
         self.preview_scrolled.set_visible(False)
-        # Hide preview's scrollbar so they share the editor's scrollbar natively
+        # Hide the outer scrolled window's scrollbars since WebKit renders its own scrollbar
         self.preview_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
 
         if WebKit:
@@ -163,6 +163,11 @@ class TextayEditor(Gtk.Box):
             scroll_controller = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.VERTICAL)
             scroll_controller.connect("scroll", self._on_webview_scroll_event)
             self.webview.add_controller(scroll_controller)
+
+            # WebKit User Content Manager for bidirectional scrollbar drag synchronization
+            ucm = self.webview.get_user_content_manager()
+            ucm.register_script_message_handler("scrollSync")
+            ucm.connect("script-message-received::scrollSync", self._on_javascript_scroll)
         else:
             self.webview = None
             self.preview_scrolled.set_child(Gtk.Label(label="WebKitGTK is not installed on your system."))
@@ -294,15 +299,7 @@ class TextayEditor(Gtk.Box):
             self.update_markdown_preview()
 
         if self.pm.get("auto_save", True):
-            # Debounce: save 1.5 s after the user stops typing
-            if self.auto_save_timeout_id > 0:
-                GLib.source_remove(self.auto_save_timeout_id)
-            self.auto_save_timeout_id = GLib.timeout_add(1500, self._auto_save_cb)
-
-    def _auto_save_cb(self):
-        self.save_immediately()
-        self.auto_save_timeout_id = 0
-        return False
+            self.save_immediately()
 
     # ──────────────────────────────────────────────────────────────────────
     # Markdown Live Preview
@@ -329,8 +326,12 @@ class TextayEditor(Gtk.Box):
                 ratio = editor_val / editor_max
                 # Evaluate scroll position directly inside WebView document body via JS
                 js = f"""
+                window.isSyncing = true;
                 var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
                 window.scrollTo(0, maxScroll * {ratio});
+                setTimeout(function() {{
+                    window.isSyncing = false;
+                }}, 80);
                 """
                 self.webview.evaluate_javascript(js, -1, None, None, None, None)
         except Exception as e:
@@ -345,6 +346,31 @@ class TextayEditor(Gtk.Box):
         new_val = max(0, min(new_val, editor_adj.get_upper() - editor_adj.get_page_size()))
         editor_adj.set_value(new_val)
         return True
+
+    def _on_javascript_scroll(self, ucm, js_result):
+        """Receive scroll updates from JavaScript inside WebKit and synchronize back to the editor."""
+        if self._syncing_scroll:
+            return
+        self._syncing_scroll = True
+        try:
+            val = None
+            if hasattr(js_result, "get_js_value"):
+                js_val = js_result.get_js_value()
+                if js_val.is_number():
+                    val = js_val.to_double()
+            else:
+                val = js_result.get_value()
+
+            if val is not None:
+                ratio = float(val)
+                editor_adj = self.source_scrolled.get_vadjustment()
+                editor_max = editor_adj.get_upper() - editor_adj.get_page_size()
+                if editor_max > 0:
+                    editor_adj.set_value(ratio * editor_max)
+        except Exception as e:
+            print(f"JS scroll sync error: {e}")
+        finally:
+            self._syncing_scroll = False
     def update_markdown_preview(self):
         if not self.webview:
             return
@@ -639,10 +665,25 @@ class TextayEditor(Gtk.Box):
         <body>
             {html_body}
             <script>
+                window.isSyncing = false;
+
                 // Instant layout scroll alignment on document load/re-render
                 window.onload = function() {{
+                    window.isSyncing = true;
                     var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
                     window.scrollTo(0, maxScroll * {ratio});
+                    setTimeout(function() {{
+                        window.isSyncing = false;
+                    }}, 80);
+                }};
+
+                // Bidirectional user scroll listener
+                window.onscroll = function() {{
+                    if (!window.isSyncing) {{
+                        var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+                        var ratio = maxScroll > 0 ? (window.scrollY / maxScroll) : 0;
+                        window.webkit.messageHandlers.scrollSync.postMessage(ratio);
+                    }}
                 }};
             </script>
         </body>
