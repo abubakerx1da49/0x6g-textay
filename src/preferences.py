@@ -25,7 +25,9 @@ class PreferencesManager:
         self.prefs = {
             "show_all_files": False,
             "auto_save": True,
-            "theme": "default"
+            "theme": "default",
+            "editor_zoom": 120,
+            "preview_zoom": 90
         }
         if os.path.exists(CONFIG_FILE):
             try:
@@ -70,7 +72,7 @@ class PreferencesWindow(Adw.PreferencesWindow):
 
         # Group
         group = Adw.PreferencesGroup()
-        group.set_title("File Explorer & Editor")
+        group.set_title("File Explorer &amp; Editor")
         page.add(group)
 
         # Row 1: Show all files
@@ -99,6 +101,36 @@ class PreferencesWindow(Adw.PreferencesWindow):
         auto_save_row.add_suffix(self.auto_save_switch)
         group.add(auto_save_row)
 
+        # Row 3: Editor Zoom
+        editor_zoom_row = Adw.ActionRow()
+        editor_zoom_row.set_title("Editor Text Scale (%)")
+        editor_zoom_row.set_subtitle("Zoom level for the editor font (best experience: 110%)")
+        
+        editor_zoom_adj = Gtk.Adjustment.new(
+            self.pm.get("editor_zoom", 120), 50.0, 200.0, 10.0, 10.0, 0.0
+        )
+        self.editor_zoom_spin = Gtk.SpinButton.new(editor_zoom_adj, 10.0, 0)
+        self.editor_zoom_spin.set_valign(Gtk.Align.CENTER)
+        self.editor_zoom_spin.connect("value-changed", self.on_editor_zoom_changed)
+        
+        editor_zoom_row.add_suffix(self.editor_zoom_spin)
+        group.add(editor_zoom_row)
+
+        # Row 4: Preview Zoom
+        preview_zoom_row = Adw.ActionRow()
+        preview_zoom_row.set_title("Preview Text Scale (%)")
+        preview_zoom_row.set_subtitle("Zoom level for the live preview layout (best experience: 90%)")
+        
+        preview_zoom_adj = Gtk.Adjustment.new(
+            self.pm.get("preview_zoom", 90), 50.0, 200.0, 10.0, 10.0, 0.0
+        )
+        self.preview_zoom_spin = Gtk.SpinButton.new(preview_zoom_adj, 10.0, 0)
+        self.preview_zoom_spin.set_valign(Gtk.Align.CENTER)
+        self.preview_zoom_spin.connect("value-changed", self.on_preview_zoom_changed)
+        
+        preview_zoom_row.add_suffix(self.preview_zoom_spin)
+        group.add(preview_zoom_row)
+
     def on_show_all_toggled(self, widget, state):
         self.pm.set("show_all_files", state)
         if self.on_changed_callback:
@@ -110,3 +142,15 @@ class PreferencesWindow(Adw.PreferencesWindow):
         if self.on_changed_callback:
             self.on_changed_callback("auto_save", state)
         return False
+
+    def on_editor_zoom_changed(self, widget):
+        val = int(widget.get_value())
+        self.pm.set("editor_zoom", val)
+        if self.on_changed_callback:
+            self.on_changed_callback("editor_zoom", val)
+
+    def on_preview_zoom_changed(self, widget):
+        val = int(widget.get_value())
+        self.pm.set("preview_zoom", val)
+        if self.on_changed_callback:
+            self.on_changed_callback("preview_zoom", val)

@@ -87,6 +87,9 @@ class TextayEditor(Gtk.Box):
         self.is_monitoring = False
         self.auto_save_timeout_id = 0
         self.ignore_buffer_changes = False
+        self.editor_zoom = self.pm.get("editor_zoom", 120)
+        self.preview_zoom = self.pm.get("preview_zoom", 90)
+        self._zoom_css_provider = None
 
         # ── AdwBanner: external modification warning ───────────────────────
         self.banner = Adw.Banner()
@@ -234,6 +237,8 @@ class TextayEditor(Gtk.Box):
         # Automatically display live preview for Markdown files
         is_md = filepath.lower().endswith(".md")
         self.set_preview_visible(is_md)
+        self.set_editor_zoom(self.editor_zoom)
+        self.set_preview_zoom(self.preview_zoom)
 
     def unload_file(self):
         """Saves pending changes, stops monitoring, and clears the buffer."""
@@ -310,6 +315,15 @@ class TextayEditor(Gtk.Box):
         if visible:
             # Split equally
             width = self.get_width()
+            if width <= 50:
+                # Retrieve root window size or fallback to standard splits
+                root = self.get_root()
+                if root:
+                    win_width = root.get_width()
+                    width = int(win_width * 0.78) if win_width > 50 else 900
+                else:
+                    width = 900
+            
             self.main_paned.set_position(int(width / 2))
             self.update_markdown_preview()
 
@@ -354,12 +368,26 @@ class TextayEditor(Gtk.Box):
         self._syncing_scroll = True
         try:
             val = None
+            
+            # Unbox WebKit.JavascriptResult to JSC.Value if wrapper is present
             if hasattr(js_result, "get_js_value"):
                 js_val = js_result.get_js_value()
-                if js_val.is_number():
-                    val = js_val.to_double()
             else:
-                val = js_result.get_value()
+                js_val = js_result
+
+            # Bulletproof numeric extraction from JSC.Value or raw python types
+            if hasattr(js_val, "is_number") and js_val.is_number():
+                val = js_val.to_double()
+            elif hasattr(js_val, "to_double"):
+                val = js_val.to_double()
+            elif hasattr(js_val, "to_string"):
+                val_str = js_val.to_string()
+                if val_str:
+                    val = float(val_str)
+            elif isinstance(js_val, (int, float)):
+                val = float(js_val)
+            elif isinstance(js_val, str):
+                val = float(js_val)
 
             if val is not None:
                 ratio = float(val)
@@ -427,7 +455,7 @@ class TextayEditor(Gtk.Box):
             val = int(val_match.group(1)) if val_match else 0
             
             max_match = re.search(r'max=(\d+)', attributes)
-            max_val = int(max_match.group(1)) if max_match else 100
+            max_val = int(max_match.group(1)) if max_match else 90
             
             emoji_match = re.search(r'emoji="([^"]*)"', attributes)
             emoji = emoji_match.group(1) if emoji_match else None
@@ -502,11 +530,14 @@ class TextayEditor(Gtk.Box):
         style_manager = Adw.StyleManager.get_default()
         is_dark = style_manager.get_dark()
 
-        bg_color = "#1e1e1e" if is_dark else "#ffffff"
-        fg_color = "#e0e0e0" if is_dark else "#2e2e2e"
-        code_bg = "#2d2d2d" if is_dark else "#f5f5f5"
-        link_color = "#3584e4" if is_dark else "#1c71d8"
-        border_color = "#333333" if is_dark else "#e0e0e0"
+        bg_color = "#121212" if is_dark else "#fafafa" # Clean slate canvas
+        fg_color = "#d4d4d8" if is_dark else "#3f3f46" # neutral-300 / neutral-700
+        headings_color = "#f4f4f5" if is_dark else "#18181b" # neutral-50 / neutral-900
+        code_bg = "#1e1e1f" if is_dark else "#f4f4f5" # neutral-800 / neutral-100
+        code_fg = "#f4f4f5" if is_dark else "#18181b" # neutral-50 / neutral-900
+        link_color = "#60a5fa" if is_dark else "#2563eb" # blue-400 / blue-600
+        border_color = "#27272a" if is_dark else "#e4e4e7" # neutral-800 / neutral-200
+        quote_border = "#3f3f46" if is_dark else "#d4d4d8" # neutral-700 / neutral-300
 
         html = f"""
         <!DOCTYPE html>
@@ -515,63 +546,158 @@ class TextayEditor(Gtk.Box):
             <meta charset="utf-8">
             <style>
                 body {{
-                    font-family: system-ui, -apple-system, sans-serif;
+                    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
                     background-color: {bg_color};
                     color: {fg_color};
-                    line-height: 1.6;
-                    padding: 24px;
+                    line-height: 1.75;
+                    font-size: 1rem;
+                    padding: 32px 40px;
                     margin: 0;
+                    max-width: 720px;
+                    margin-left: auto;
+                    margin-right: auto;
                 }}
-                h1, h2, h3, h4, h5, h6 {{
+                hr {{
+                    margin: 48px 0;
+                    color: {border_color};
+                    opacity: 0.5;
+                }}
+                h1, h2, h3, h4 {{
+                    color: {headings_color};
+                    font-weight: 800;
+                    line-height: 1.25;
+                    margin-bottom: 0.88em;
+                }}
+                h1 {{
+                    font-size: 2.25em;
+                    margin-top: 0;
+                    margin-bottom: 0.88em;
+                    border-bottom: 1px solid {border_color};
+                    padding-bottom: 12px;
+                }}
+                h2 {{
+                    font-size: 1.5em;
+                    margin-top: 2em;
+                    margin-bottom: 1em;
+                    font-weight: 700;
                     border-bottom: 1px solid {border_color};
                     padding-bottom: 8px;
-                    margin-top: 24px;
                 }}
-                code {{
-                    background-color: {code_bg};
-                    padding: 2px 6px;
-                    border-radius: 4px;
-                    font-family: monospace;
+                h3 {{
+                    font-size: 1.25em;
+                    margin-top: 1.6em;
+                    margin-bottom: 0.6em;
+                    font-weight: 600;
                 }}
-                pre code {{
-                    display: block;
-                    padding: 12px;
-                    overflow-x: auto;
+                h4 {{
+                    font-size: 1em;
+                    margin-top: 1.5em;
+                    margin-bottom: 0.5em;
+                    font-weight: 600;
+                }}
+                p {{
+                    margin-top: 1.25em;
+                    margin-bottom: 1.25em;
+                }}
+                ol, ul {{
+                    margin-top: 1.25em;
+                    margin-bottom: 1.25em;
+                    padding-left: 1.625em;
+                }}
+                li {{
+                    margin-top: 0.5em;
+                    margin-bottom: 0.5em;
+                }}
+                ol ol, ol ul, ul ol, ul ul {{
+                    margin-top: 0.75em;
+                    margin-bottom: 0.75em;
                 }}
                 blockquote {{
-                    border-left: 4px solid {link_color};
-                    margin: 0;
-                    padding-left: 16px;
-                    color: gray;
+                    font-weight: 500;
+                    font-style: italic;
+                    color: {headings_color};
+                    border-left: 4px solid {quote_border};
+                    margin-top: 1.6em;
+                    margin-bottom: 1.6em;
+                    padding-left: 1em;
+                }}
+                code {{
+                    color: {code_fg};
+                    background-color: {code_bg};
+                    padding: 0.25em 0.5em;
+                    border-radius: 0.375em;
+                    font-size: 0.875em;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                    font-weight: 600;
+                }}
+                pre {{
+                    background-color: {code_bg};
+                    border-radius: 0.5em;
+                    margin-top: 1.71em;
+                    margin-bottom: 1.71em;
+                    overflow-x: auto;
+                    padding: 1em 1.5em;
+                    border: 1px solid {border_color};
+                }}
+                pre code {{
+                    background-color: transparent;
+                    padding: 0;
+                    border-radius: 0;
+                    font-size: 0.875em;
+                    color: {code_fg};
+                    font-weight: 400;
                 }}
                 table {{
-                    border-collapse: collapse;
                     width: 100%;
-                    margin: 16px 0;
-                }}
-                th, td {{
-                    border: 1px solid {border_color};
-                    padding: 8px 12px;
+                    table-layout: auto;
                     text-align: left;
+                    margin-top: 2em;
+                    margin-bottom: 2em;
+                    font-size: 0.875em;
+                    line-height: 1.71;
+                    border-collapse: collapse;
                 }}
-                th {{
-                    background-color: {code_bg};
+                thead {{
+                    border-bottom: 1px solid {border_color};
+                }}
+                thead th {{
+                    color: {headings_color};
+                    font-weight: 600;
+                    padding-bottom: 0.75em;
+                    padding-left: 0.75em;
+                    padding-right: 0.75em;
+                }}
+                tbody tr {{
+                    border-bottom: 1px solid {border_color};
+                }}
+                tbody tr:last-child {{
+                    border-bottom: none;
+                }}
+                tbody td {{
+                    padding-top: 0.75em;
+                    padding-bottom: 0.75em;
+                    padding-left: 0.75em;
+                    padding-right: 0.75em;
                 }}
                 a {{
                     color: {link_color};
                     text-decoration: none;
+                    font-weight: 500;
+                    border-bottom: 1px solid transparent;
+                    transition: border-color 0.15s;
                 }}
                 a:hover {{
-                    text-decoration: underline;
+                    border-color: {link_color};
                 }}
                 .todo-item {{
                     display: flex;
                     align-items: center;
-                    gap: 8px;
-                    margin: 2px 0px 2px -40px !important;
+                    gap: 12px;
+                    margin: 4px 0px 4px -28px !important;
                     border: 1px solid {border_color};
-                    padding: 8px 12px;
+                    padding: 2px 6px;
                     border-radius: 8px;
+                    background-color: {code_bg};
                 }}
                 .todo-item input[type="checkbox"] {{
                     -webkit-appearance: none;
@@ -579,44 +705,31 @@ class TextayEditor(Gtk.Box):
                     margin: 0;
                     width: 20px;
                     height: 20px;
-                    border: 2px solid {border_color};
-                    border-radius: 50%;
+                    border: 2px solid {quote_border};
+                    border-radius: 6px;
                     background-color: transparent;
                     display: inline-grid;
                     place-content: center;
                     outline: none;
                     cursor: not-allowed;
-                    transition: background-color 0.15s, border-color 0.15s;
                 }}
                 .todo-item input[type="checkbox"]:checked {{
-                    background-color: #3584e4;
-                    border-color: #3584e4;
-                }}
-                .todo-item input[type="checkbox"]:checked::before {{
-                    content: "✓";
-                    color: white;
-                    font-size: 12px;
-                    font-weight: bold;
+                    background-color: #3b82f6;
+                    border-color: #3b82f6;
                 }}
                 .todo-item.finished {{
-                    opacity: 0.7;
+                    opacity: 0.6;
+                    text-decoration: line-through;
                 }}
                 .checklist-card {{
-                    background-color: {code_bg};
                     border: 1px solid {border_color};
                     border-radius: 12px;
-                    padding: 16px 20px;
+                    padding: 4px;
                     margin: 20px 0;
-                    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
                 }}
                 .checklist-header {{
-                    font-size: 14px;
-                    font-weight: bold;
-                    letter-spacing: 0.8px;
-                    text-transform: uppercase;
-                    border-bottom: 1px solid {border_color};
-                    padding-bottom: 8px;
-                    margin-bottom: 12px;
+                    font-size: 16px;
+                    padding: 4px 8px;
                     color: {link_color};
                 }}
                 .checklist-items {{
@@ -626,26 +739,20 @@ class TextayEditor(Gtk.Box):
                 }}
                 .checklist-items .todo-item {{
                     background-color: {bg_color};
-                    margin: 6px 0 !important;
+                    margin: 4px 0 0 0 !important;
                 }}
                 .progress-card {{
-                    background-color: {code_bg};
+                    margin: 4px 0px 4px 4px !important;
                     border: 1px solid {border_color};
+                    padding: 2px 6px 2px 8px;
                     border-radius: 8px;
-                    padding: 4px 12px;
-                    margin: 2px 0;
                     display: inline-flex;
-                    font-family: monospace;
-                    font-size: 14px;
                 }}
                 .progress-ratio {{
-                    font-weight: bold;
                     color: {fg_color};
-                    min-width: 50px;
                 }}
                 .progress-bar-text {{
                     letter-spacing: 1px;
-                    font-size: 15px;
                 }}
                 .progress-filled {{
                     color: #2ec27e;
@@ -655,8 +762,6 @@ class TextayEditor(Gtk.Box):
                     opacity: 0.6;
                 }}
                 .progress-percent {{
-                    font-weight: bold;
-                    color: {link_color};
                     min-width: 45px;
                     text-align: right;
                 }}
@@ -689,6 +794,7 @@ class TextayEditor(Gtk.Box):
         </body>
         </html>
         """
+        self.last_compiled_html = html
         self.webview.load_html(html, "")
 
     # ──────────────────────────────────────────────────────────────────────
@@ -727,3 +833,95 @@ class TextayEditor(Gtk.Box):
         self.banner.set_revealed(False)
         self.keep_mine_btn.set_visible(False)
         self.save_immediately()
+
+    def set_editor_zoom(self, zoom):
+        """Scale text size in the GtkSourceView editor."""
+        self.editor_zoom = zoom
+        pt_size = 11.0 * (zoom / 100.0)
+        css = f"textview {{ font-size: {pt_size:.1f}pt; }}"
+        
+        if hasattr(self, "_zoom_css_provider") and self._zoom_css_provider:
+            self.source_view.get_style_context().remove_provider(self._zoom_css_provider)
+        
+        self._zoom_css_provider = Gtk.CssProvider()
+        self._zoom_css_provider.load_from_data(css.encode('utf-8'))
+        self.source_view.get_style_context().add_provider(
+            self._zoom_css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        
+    def set_preview_zoom(self, zoom):
+        """Scale text size in the WebKit markdown preview."""
+        self.preview_zoom = zoom
+        if self.webview:
+            self.webview.set_zoom_level(zoom / 100.0)
+
+    def export_to_pdf(self, pdf_path, page_size="A4", orientation="Portrait", margin_mm=20):
+        """Export the rendered HTML content to a PDF file with custom page setup."""
+        if not hasattr(self, "webview") or not self.webview:
+            return False
+            
+        try:
+            # Create paper size based on user selection
+            sz = page_size.upper()
+            if sz == "LETTER":
+                paper_name = Gtk.PAPER_NAME_LETTER
+            elif sz == "A5":
+                paper_name = Gtk.PAPER_NAME_A5
+            elif sz == "A3":
+                paper_name = Gtk.PAPER_NAME_A3
+            else:
+                paper_name = Gtk.PAPER_NAME_A4
+                
+            paper_size = Gtk.PaperSize.new(paper_name)
+            
+            # Configure page setup (orientation & margins)
+            page_setup = Gtk.PageSetup.new()
+            page_setup.set_paper_size(paper_size)
+            
+            if orientation.lower() == "landscape":
+                page_setup.set_orientation(Gtk.PageOrientation.LANDSCAPE)
+            else:
+                page_setup.set_orientation(Gtk.PageOrientation.PORTRAIT)
+                
+            # Set margins in millimeters
+            page_setup.set_top_margin(margin_mm, Gtk.Unit.MM)
+            page_setup.set_bottom_margin(margin_mm, Gtk.Unit.MM)
+            page_setup.set_left_margin(margin_mm, Gtk.Unit.MM)
+            page_setup.set_right_margin(margin_mm, Gtk.Unit.MM)
+            
+            # Configure print settings to output directly to the chosen PDF path
+            print_settings = Gtk.PrintSettings.new()
+            print_settings.set("printer", "Print to File")
+            print_settings.set("output-file-format", "pdf")
+            
+            # Print settings require a file:// URI for saving to a file
+            uri = "file://" + os.path.abspath(pdf_path)
+            print_settings.set("output-uri", uri)
+            
+            # Create print operation and retain strong reference on self to prevent garbage collection
+            self._current_print_op = WebKit.PrintOperation.new(self.webview)
+            self._current_print_op.set_print_settings(print_settings)
+            self._current_print_op.set_page_setup(page_setup)
+            
+            def on_finished(op):
+                # Clean up the reference after printing is fully done
+                self._current_print_op = None
+                
+            def on_failed(op, error):
+                print(f"Print failed: {error.message}")
+                self._current_print_op = None
+                
+            self._current_print_op.connect("finished", on_finished)
+            self._current_print_op.connect("failed", on_failed)
+            
+            # Execute print operation asynchronously without showing standard dialogs
+            self._current_print_op.print_()
+            return True
+        except Exception as e:
+            print(f"Error during WebKit PDF print operation: {e}")
+            return False
+
+    def get_preview_html(self):
+        """Returns the last compiled HTML content for live printing/preview usage."""
+        return getattr(self, "last_compiled_html", "")
