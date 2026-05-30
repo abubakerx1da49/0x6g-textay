@@ -70,6 +70,60 @@ class TextayWindow(Adw.ApplicationWindow):
         # Build the file explorer sidebar
         self._build_explorer_sidebar()
 
+        # Load premium CSS styling for the sidebar listview selection highlight
+        sidebar_css = """
+        listview.navigation-sidebar row {
+            border-radius: 6px;
+            margin: 2px 6px;
+            padding: 0;
+            background-color: transparent !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            transition: background-color 0.15s ease;
+        }
+        /* Hover state is ONLY applied when the mouse is actually inside the listview boundaries */
+        listview.navigation-sidebar:hover row:hover:not(:selected) {
+            background-color: alpha(currentColor, 0.08) !important;
+        }
+        /* Keep selected row prominently highlighted even when unfocused */
+        listview.navigation-sidebar row:selected {
+            background-color: @accent_bg_color !important;
+            color: @accent_fg_color !important;
+        }
+        listview.navigation-sidebar row:selected:hover,
+        listview.navigation-sidebar row:selected:focus,
+        listview.navigation-sidebar row:selected:active {
+            background-color: @accent_bg_color !important;
+            color: @accent_fg_color !important;
+        }
+        /* Ensure child labels, images, and treeexpanders inherit the accent color and have transparent backgrounds */
+        listview.navigation-sidebar row:selected label,
+        listview.navigation-sidebar row:selected image,
+        listview.navigation-sidebar row:selected treeexpander {
+            color: @accent_fg_color !important;
+        }
+        listview.navigation-sidebar row treeexpander,
+        listview.navigation-sidebar row box {
+            background-color: transparent !important;
+            background: transparent !important;
+        }
+        /* Remove stuck focus styling on non-selected rows */
+        listview.navigation-sidebar row:focus:not(:selected),
+        listview.navigation-sidebar row:active:not(:selected),
+        listview.navigation-sidebar row:focus-within:not(:selected) {
+            background-color: transparent !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }
+        """
+        sidebar_provider = Gtk.CssProvider()
+        sidebar_provider.load_from_data(sidebar_css.encode('utf-8'))
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            sidebar_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
         # Modern Print/Export as PDF Button
         self.export_pdf_btn = Gtk.Button.new_from_icon_name("document-print-symbolic")
         self.export_pdf_btn.set_tooltip_text("Export Rendered Page to PDF")
@@ -132,9 +186,10 @@ class TextayWindow(Adw.ApplicationWindow):
         self._file_selection = Gtk.SingleSelection()
         self._file_selection.set_autoselect(False)
         self._file_selection.set_can_unselect(True)
+        self._file_selection.connect("notify::selected-item", self._on_selection_changed)
 
         self._list_view = Gtk.ListView.new(self._file_selection, factory)
-        self._list_view.set_single_click_activate(True)
+        self._list_view.set_single_click_activate(False)
         self._list_view.add_css_class('navigation-sidebar')
         self._list_view.connect('activate', self._on_list_item_activated)
 
@@ -372,6 +427,18 @@ class TextayWindow(Adw.ApplicationWindow):
     # File open
     # ──────────────────────────────────────────────────────────────────────
 
+    def _on_selection_changed(self, selection, pspec):
+        """Called when list selection changes (e.g. via mouse click or key navigation)."""
+        position = selection.get_selected()
+        if position == Gtk.INVALID_LIST_POSITION:
+            return
+        tree_row = selection.get_item(position)
+        if tree_row is None:
+            return
+        item = tree_row.get_item()
+        if item and not item.is_dir:
+            self._open_file(item.path)
+
     def _on_list_item_activated(self, list_view, position):
         """Single-click handler: open file or toggle folder."""
         self._file_selection.set_selected(position)
@@ -398,11 +465,14 @@ class TextayWindow(Adw.ApplicationWindow):
             row = model.get_item(i)
             if row:
                 item = row.get_item()
-                if item and not item.is_dir and item.path == filepath:
+                if item and not item.is_dir and os.path.realpath(item.path) == os.path.realpath(filepath):
                     self._file_selection.set_selected(i)
+                    self._list_view.scroll_to(i, Gtk.ListScrollFlags.NONE, None)
                     break
 
     def _open_file(self, filepath):
+        if self.current_filepath and os.path.realpath(self.current_filepath) == os.path.realpath(filepath):
+            return
         self.editor.unload_file()
         self.current_filepath = filepath
         self.editor.load_file(filepath)
